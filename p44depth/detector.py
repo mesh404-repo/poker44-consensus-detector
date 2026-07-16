@@ -19,6 +19,9 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+_TARGET_PPR = 0.05   # flag top 5% of a window -> hard_fpr<=0.10 even if every flag were human
+_MIN_CAL_N = 20      # a quantile below this is meaningless; leave unshifted
+
 from p44depth.aggregate import zscore, weighted_zmean, squash
 
 _ENS = os.environ.get("POKER44_ENSEMBLE_DIR", "/root/poker44-heroprofiler/ensemble")
@@ -122,4 +125,12 @@ class Detector:
         M = np.vstack(cols).T
         w = np.array([WEIGHTS.get(nm, 1.0) for nm in names], dtype=float)
         z = weighted_zmean(M, w)
+        # Reward-aware calibration. The validator pays 0.35*AP + 0.30*recall@FPR<=5% + 0.30*q + 0.05:
+        # AP and recall are rank-based, but q is read off the HARD 0.5 threshold (q=0 when nothing
+        # true clears 0.5 -- a total wipeout -- and q=1 only while hard_fpr<=0.10). squash is
+        # monotone, so recentring z cannot touch the ranking terms; it only banks q. Per-window
+        # quantile rather than a fixed offset, because the live chunk distribution drifts from the
+        # benchmark and a constant shift risks either the FPR cliff or flagging nothing at all.
+        if z.size >= _MIN_CAL_N:
+            z = z - np.quantile(z, 1.0 - _TARGET_PPR)
         return [float(min(1.0, max(0.0, squash(v)))) for v in z]
